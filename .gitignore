@@ -1,0 +1,11 @@
+watermark-server
+watermarkServer
+*.bak
+*.bak2
+server.log
+test_result.json
+.idea/
+tmp/
+template/dist/
+re.png
+go.sum
