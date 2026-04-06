@@ -9,4 +9,6 @@ var ctr = controllers.IndexController{}
 
 func IndexRouter(r *gin.Engine) {
 	r.GET("/parse", ctr.Index)
+	r.GET("/proxy/*encoded", controllers.Proxy)
+	r.POST("/proxy", controllers.Proxy)
 }

@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
@@ -54,14 +55,11 @@ func (ctr *IndexController) Index(ctx *gin.Context) {
 		platformInfo.Name = "BiliBili"
 		platformInfo.Platform = "bilibili"
 		path, err = handleVideo.BiliBili(rUrl, phone_ua)
-	} else if strings.Contains(rUrl, "kg3.qq.com") || strings.Contains(rUrl, "kg.qq.com") || strings.Contains(rUrl, "node.kg.qq.com") { // 全民K歌
-		platformInfo.Name = "全民k歌"
-		platformInfo.Platform = "kg"
-		path, err = handleVideo.QuanMingKGe(rUrl, phone_ua)
+
 	} else {
 		platformInfo.Name = ""
 		platformInfo.Platform = ""
-		base.Err(ctx, "暂不支持该平台！当前支持：抖音、快手、BiliBili、全民K歌")
+		base.Err(ctx, "暂不支持该平台！当前支持：抖音、快手、BiliBili")
 		return
 	}
 
@@ -70,11 +68,29 @@ func (ctr *IndexController) Index(ctx *gin.Context) {
 		return
 	}
 	var res = &struct {
-		PlatformInfo *Platform `json:"platformInfo"`
-		Path         string    `json:"path"`
+		PlatformInfo *Platform  `json:"platformInfo"`
+		Path         string     `json:"path"`
+		Images       []string   `json:"images,omitempty"`
 	}{
 		PlatformInfo: platformInfo,
 		Path:         path,
+	}
+
+	// B站代理
+	if platformInfo.Platform == "bilibili" && path != "" {
+		encoded := base64.StdEncoding.EncodeToString([]byte(path))
+		scheme := "http"
+		if ctx.Request.TLS != nil {
+			scheme = "https"
+		}
+		res.Path = scheme + "://" + ctx.Request.Host + "/proxy/" + encoded
+	}
+
+	// 快手图文 - 解析 IMAGE: 前缀
+	if strings.HasPrefix(path, "IMAGE:") {
+		res.Path = ""
+		urlStr := strings.TrimPrefix(path, "IMAGE:")
+		res.Images = strings.Split(urlStr, ",")
 	}
 
 	base.Success(ctx, res, "解析完成")

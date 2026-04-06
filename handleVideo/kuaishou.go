@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"regexp"
+	"strings"
 )
 
 func getKSRealityUrl(rUrl, ua string) ([]byte, error) {
@@ -27,7 +28,8 @@ func getKSRealityUrl(rUrl, ua string) ([]byte, error) {
 	return body, nil
 }
 
-// 快手解析 - 修复：适配2026年HTML结构，从mainMvUrls提取mp4链接
+// KuaiShou 解析 - 支持视频(mp4)和图文(图片列表)
+// 返回: 视频URL, 图片URL列表(逗号分隔), 错误
 func KuaiShou(rUrl, ua string) (string, error) {
 	body, err := getKSRealityUrl(rUrl, ua)
 	if err != nil {
@@ -35,7 +37,7 @@ func KuaiShou(rUrl, ua string) (string, error) {
 	}
 	html := string(body)
 
-	// 方式1: 匹配 mainMvUrls 中的 mp4 URL
+	// 方式1: 匹配视频 mp4 URL
 	regs := regexp.MustCompile(`"url":"(https?://[^"]+\.mp4[^"]*)"`)
 	matches := regs.FindAllStringSubmatch(html, -1)
 	if len(matches) > 0 && len(matches[0]) >= 2 {
@@ -49,5 +51,25 @@ func KuaiShou(rUrl, ua string) (string, error) {
 		return matches2[1], nil
 	}
 
-	return "", errors.New("无效地址：未找到视频链接")
+	// 方式3: 图文帖子 - 提取 imageUrls
+	regs3 := regexp.MustCompile(`"imageUrls":\[(.*?)\]`)
+	matches3 := regs3.FindStringSubmatch(html)
+	if len(matches3) == 2 {
+		urlRegs := regexp.MustCompile(`"url":"(https?://[^"]+)"`)
+		urlMatches := urlRegs.FindAllStringSubmatch(matches3[1], -1)
+		if len(urlMatches) > 0 {
+			var urls []string
+			for _, m := range urlMatches {
+				if len(m) >= 2 {
+					urls = append(urls, m[1])
+				}
+			}
+			if len(urls) > 0 {
+				// 用特殊前缀标记图文，让 controller 识别
+				return "IMAGE:" + strings.Join(urls, ","), nil
+			}
+		}
+	}
+
+	return "", errors.New("无效地址：未找到视频或图片链接")
 }
