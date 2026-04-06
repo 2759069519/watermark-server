@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"regexp"
+	"strings"
 )
 
 type biliViewResp struct {
@@ -41,19 +43,65 @@ func getBiLi(rUrl, ua string) ([]byte, error) {
 	return body, nil
 }
 
-// BiliBili解析 - 修复：改用B站API接口，不再依赖HTML页面结构
+// 提取B站 opus/dynamic 图文中的图片
+func extractBiliOpusImages(html string) []string {
+	// 将 \u002F 转为 /
+	html = strings.ReplaceAll(html, `\u002F`, "/")
+
+	var images []string
+	seen := make(map[string]bool)
+
+	// 匹配 pics 数组中的 URL
+	// 格式: "pics":[{"url":"https://i0.hdslb.com/bfs/article/xxx.jpg","width":779,"height":1100}]
+	picsRe := regexp.MustCompile(`"pics":\[\{[^]]*?"url":"(https?://[^"]+)"`)
+	matches := picsRe.FindAllStringSubmatch(html, -1)
+	for _, m := range matches {
+		if len(m) >= 2 {
+			url := m[1]
+			if !seen[url] {
+				seen[url] = true
+				images = append(images, url)
+			}
+		}
+	}
+
+	// 如果上面没找到，用更宽松的方式匹配 hdslb 图片 URL
+	if len(images) == 0 {
+		urlRe := regexp.MustCompile(`https?://[^\s"<>]+hdslb\.com[^\s"<>]+\.(?:jpg|png|webp)`)
+		allURLs := urlRe.FindAllString(html, -1)
+		for _, url := range allURLs {
+			// 过滤掉头像、emoji、图标等
+			if strings.Contains(url, "face") || strings.Contains(url, "emoji") ||
+				strings.Contains(url, "icon") || strings.Contains(url, "logo") {
+				continue
+			}
+			if !seen[url] {
+				seen[url] = true
+				images = append(images, url)
+			}
+		}
+	}
+
+	return images
+}
+
+// BiliBili解析 - 支持视频和图文(opus/dynamic)
 func BiliBili(rUrl, ua string) (string, error) {
 	// 提取 BV号 或 av号
 	var bvid string
 	var avid string
+	var opusId string
 
 	bvRe := regexp.MustCompile(`(BV[a-zA-Z0-9]+)`)
 	avRe := regexp.MustCompile(`/video/av(\d+)`)
+	opusRe := regexp.MustCompile(`/opus/(\d+)`)
 
 	if m := bvRe.FindStringSubmatch(rUrl); len(m) >= 2 {
 		bvid = m[1]
 	} else if m := avRe.FindStringSubmatch(rUrl); len(m) >= 2 {
 		avid = m[1]
+	} else if m := opusRe.FindStringSubmatch(rUrl); len(m) >= 2 {
+		opusId = m[1]
 	} else {
 		// 尝试跟随短链
 		client := &http.Client{
@@ -70,13 +118,21 @@ func BiliBili(rUrl, ua string) (string, error) {
 				bvid = m[1]
 			} else if m := avRe.FindStringSubmatch(finalUrl); len(m) >= 2 {
 				avid = m[1]
+			} else if m := opusRe.FindStringSubmatch(finalUrl); len(m) >= 2 {
+				opusId = m[1]
 			}
 		}
-		if bvid == "" && avid == "" {
-			return "", errors.New("无效地址：无法提取视频ID")
+		if bvid == "" && avid == "" && opusId == "" {
+			return "", errors.New("无效地址：无法提取视频或内容ID")
 		}
 	}
 
+	// 处理 opus 图文
+	if opusId != "" {
+		return biliOpus(opusId, ua)
+	}
+
+	// 以下是视频解析逻辑
 	// Step 1: 获取视频信息（cid）
 	var viewUrl string
 	if bvid != "" {
@@ -121,4 +177,25 @@ func BiliBili(rUrl, ua string) (string, error) {
 	}
 
 	return playResp.Data.Durl[0].Url, nil
+}
+
+// B站 opus 图文解析
+func biliOpus(opusId, ua string) (string, error) {
+	log.Println("B站 opus 图文:", opusId)
+
+	// 获取移动端 opus 页面
+	pageURL := fmt.Sprintf("https://m.bilibili.com/opus/%s", opusId)
+	body, err := getBiLi(pageURL, ua)
+	if err != nil {
+		return "", fmt.Errorf("请求失败: %v", err)
+	}
+	html := string(body)
+
+	images := extractBiliOpusImages(html)
+	if len(images) == 0 {
+		return "", errors.New("未找到图片")
+	}
+
+	log.Printf("B站 opus: 找到 %d 张图片\n", len(images))
+	return "IMAGE:" + strings.Join(images, ","), nil
 }

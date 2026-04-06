@@ -27,7 +27,17 @@ func (ctr *IndexController) Index(ctx *gin.Context) {
 		Platform string `json:"platform"`
 	}
 	var platformInfo = &Platform{}
+
+	// 支持 GET query 和 POST JSON body
 	var keyWords string = ctx.Query("key_words")
+	if keyWords == "" && ctx.Request.Method == "POST" {
+		var body struct {
+			KeyWords string `json:"key_words"`
+		}
+		if bindErr := ctx.ShouldBindJSON(&body); bindErr == nil {
+			keyWords = body.KeyWords
+		}
+	}
 	if keyWords == "" {
 		ctx.JSON(http.StatusOK, gin.H{
 			"code": http.StatusBadRequest,

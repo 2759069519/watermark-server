@@ -105,14 +105,70 @@ textarea::placeholder{color:#555}
     <p style="margin:8px 0"><span class="method post">POST</span><code>/parse</code> Body: <code>{"key_words": "..."}</code></p>
     <p style="margin:8px 0">Content-Type: <code>application/json</code></p>
     <p style="margin-top:12px;color:#555">⚠️ 分享文字含 <code>#</code> 时请使用 POST，GET 会被浏览器截断</p>
+    <br>
+    <p><strong>返回示例 — 视频：</strong></p>
+    <code>{"code":200,"data":{"platformInfo":{"name":"抖音","platform":"douyin"},"path":"https://...无水印链接"},"msg":"解析完成"}</code>
+    <br><br>
+    <p><strong>返回示例 — 图文：</strong></p>
+    <code>{"code":200,"data":{"platformInfo":{"name":"快手","platform":"kuaishou"},"path":"","images":["https://img1.jpg","https://img2.jpg"]},"msg":"解析完成"}</code>
   </div>
 </div>
 
 <script>
-const API='/parse';
+const API = '/parse';
 function fill(text){document.getElementById('input').value=text;document.getElementById('input').focus()}
-function syntaxHighlight(json){return json.replace(/("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,function(match){let cls='num';if(/^"/.test(match)){cls=/:$/.test(match)?'key':'str'}else if(/true|false/.test(match)){cls='num'}else if(/null/.test(match)){cls='str'}return'<span class="'+cls+'">'+match+'</span>'})}
-async function parse(){const input=document.getElementById('input').value.trim();if(!input)return;const btn=document.getElementById('submit');const loading=document.getElementById('loading');const result=document.getElementById('result');btn.disabled=true;loading.classList.add('show');result.classList.remove('show');document.getElementById('videoPreview').classList.remove('show');document.getElementById('imagesGrid').classList.remove('show');try{const resp=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key_words:input})});const data=await resp.json();result.classList.add('show');const status=document.getElementById('status');const platform=document.getElementById('platform');if(data.code===200&&data.data){status.textContent='解析成功';status.className='status ok';const pi=data.data.platformInfo||{};platform.textContent=pi.name?(pi.name+' · '+(data.data.images?'图文':'视频')):'';if(data.data.images&&data.data.images.length){const grid=document.getElementById('imagesGrid');grid.innerHTML='';data.data.images.forEach(url=>{const img=document.createElement('img');img.src=url;img.loading='lazy';grid.appendChild(img)});grid.classList.add('show')}else if(data.data.path){document.getElementById('videoPlayer').src=data.data.path;document.getElementById('videoPreview').classList.add('show')}document.getElementById('output').innerHTML=syntaxHighlight(JSON.stringify(data,null,2))}else{status.textContent='解析失败';status.className='status err';platform.textContent='';document.getElementById('output').innerHTML=syntaxHighlight(JSON.stringify(data,null,2))}}catch(e){result.classList.add('show');document.getElementById('status').textContent='请求错误';document.getElementById('status').className='status err';document.getElementById('output').textContent=e.message}finally{btn.disabled=false;loading.classList.remove('show')}}
+function syntaxHighlight(json){
+  return json.replace(/("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,function(match){
+    let cls='num';
+    if(/^"/.test(match)){cls=/:$/.test(match)?'key':'str'}
+    else if(/true|false/.test(match)){cls='num'}
+    else if(/null/.test(match)){cls='str'}
+    return '<span class="'+cls+'">'+match+'</span>';
+  });
+}
+async function parse(){
+  const input=document.getElementById('input').value.trim();
+  if(!input)return;
+  const btn=document.getElementById('submit');
+  const loading=document.getElementById('loading');
+  const result=document.getElementById('result');
+  btn.disabled=true;loading.classList.add('show');result.classList.remove('show');
+  document.getElementById('videoPreview').classList.remove('show');
+  document.getElementById('imagesGrid').classList.remove('show');
+  try{
+    const resp=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key_words:input})});
+    const data=await resp.json();
+    result.classList.add('show');
+    const status=document.getElementById('status');
+    const platform=document.getElementById('platform');
+    if(data.code===200&&data.data){
+      status.textContent='解析成功';status.className='status ok';
+      const pi=data.data.platformInfo||{};
+      platform.textContent=pi.name?(pi.name+' · '+(data.data.images?'图文':'视频')):'';
+      if(data.data.images&&data.data.images.length){
+        const grid=document.getElementById('imagesGrid');
+        grid.innerHTML='';
+        data.data.images.forEach(url=>{const img=document.createElement('img');img.src=url;img.loading='lazy';grid.appendChild(img)});
+        grid.classList.add('show');
+        const preview=data.data.images.map((u,i)=>`图片${i+1}: ${u}`).join('\n');
+        document.getElementById('output').innerHTML=syntaxHighlight(JSON.stringify(data,null,2));
+      }else if(data.data.path){
+        const vp=document.getElementById('videoPreview');
+        document.getElementById('videoPlayer').src=data.data.path;
+        vp.classList.add('show');
+        document.getElementById('output').innerHTML=syntaxHighlight(JSON.stringify(data,null,2));
+      }
+    }else{
+      status.textContent='解析失败';status.className='status err';
+      platform.textContent='';
+      document.getElementById('output').innerHTML=syntaxHighlight(JSON.stringify(data,null,2));
+    }
+  }catch(e){
+    result.classList.add('show');
+    document.getElementById('status').textContent='请求错误';document.getElementById('status').className='status err';
+    document.getElementById('output').textContent=e.message;
+  }finally{btn.disabled=false;loading.classList.remove('show')}
+}
 document.getElementById('input').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey))parse()});
 </script>
 </body>
