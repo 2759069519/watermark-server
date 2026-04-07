@@ -4,42 +4,102 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
 )
 
-func getKSRealityUrl(rUrl, ua string) ([]byte, error) {
+const kuaishouUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+
+// KuaiShou 解析快手视频和图文
+func KuaiShou(rUrl string) (*VideoInfo, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", rUrl, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", ua)
+	req.Header.Set("User-Agent", kuaishouUA)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println(resp.Request.URL)
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
-	return body, nil
+	html := string(body)
+	realURL := resp.Request.URL.String()
+	log.Println("快手真实URL:", realURL)
+
+	info := &VideoInfo{
+		Platform: "kuaishou",
+		ShortURL: rUrl,
+	}
+
+	// 提取文案
+	info.Title = extractKSField(html, "caption")
+
+	// 提取话题
+	info.Topics = extractKSTopics(html)
+
+	// 提取封面
+	info.Cover = extractKSCover(html)
+
+	// 方式1: 视频 mp4
+	reMp4 := regexp.MustCompile(`"url":"(https?://[^"]+\.mp4[^"]*)"`)
+	matches := reMp4.FindAllStringSubmatch(html, -1)
+	if len(matches) > 0 && len(matches[0]) >= 2 {
+		info.Video = matches[0][1]
+		return info, nil
+	}
+
+	// 方式2: srcNoMark
+	reSrc := regexp.MustCompile(`srcNoMark":"(.*?)"`)
+	matches2 := reSrc.FindStringSubmatch(html)
+	if len(matches2) == 2 {
+		info.Video = matches2[1]
+		return info, nil
+	}
+
+	// 方式3: 图文 - atlas
+	atlasImages := extractKSAtlasImages(html)
+	if len(atlasImages) > 0 {
+		info.Images = atlasImages
+		return info, nil
+	}
+
+	// 方式4: 图文 - imageUrls
+	re3 := regexp.MustCompile(`"imageUrls":\[(.*?)\]`)
+	matches3 := re3.FindStringSubmatch(html)
+	if len(matches3) == 2 {
+		urlRe := regexp.MustCompile(`"url":"(https?://[^"]+)"`)
+		urlMatches := urlRe.FindAllStringSubmatch(matches3[1], -1)
+		var urls []string
+		for _, m := range urlMatches {
+			if len(m) >= 2 {
+				urls = append(urls, m[1])
+			}
+		}
+		if len(urls) > 0 {
+			info.Images = urls
+			return info, nil
+		}
+	}
+
+	return nil, errors.New("无效地址：未找到视频或图片链接")
 }
 
-// extractKSAtlasImages - 从快手 HTML 中提取 atlas 图文列表
-// 格式: "cdn":["xxx.com","yyy.com"],"list":["/ufile/atlas/xxx_0.jpg",...]
+// extractKSAtlasImages 提取快手 atlas 图文列表
 func extractKSAtlasImages(html string) []string {
-	regsAtlas := regexp.MustCompile(`"cdn":\[(.*?)\],"list":\[(.*?)\]`)
-	matchesAtlas := regsAtlas.FindStringSubmatch(html)
-	if len(matchesAtlas) != 3 {
+	re := regexp.MustCompile(`"cdn":\[(.*?)\],"list":\[(.*?)\]`)
+	matches := re.FindStringSubmatch(html)
+	if len(matches) != 3 {
 		return nil
 	}
 
-	// 解析 cdn 数组
 	cdnRe := regexp.MustCompile(`"([^"]+)"`)
-	cdnMatches := cdnRe.FindAllStringSubmatch(matchesAtlas[1], -1)
+	cdnMatches := cdnRe.FindAllStringSubmatch(matches[1], -1)
 	var cdnArr []string
 	for _, cm := range cdnMatches {
 		if len(cm) >= 2 {
@@ -47,8 +107,7 @@ func extractKSAtlasImages(html string) []string {
 		}
 	}
 
-	// 解析 list 数组
-	listMatches := cdnRe.FindAllStringSubmatch(matchesAtlas[2], -1)
+	listMatches := cdnRe.FindAllStringSubmatch(matches[2], -1)
 	var listArr []string
 	for _, lm := range listMatches {
 		if len(lm) >= 2 {
@@ -60,31 +119,18 @@ func extractKSAtlasImages(html string) []string {
 		return nil
 	}
 
-	// 去重: list 中 jpg 和 webp 各一份，只保留 jpg
-	var filtered []string
 	seen := make(map[string]bool)
+	var urls []string
+	baseURL := "https://" + cdnArr[0]
 	for _, path := range listArr {
 		key := path
-		// 去掉扩展名做去重
-		dotIdx := strings.LastIndex(key, ".")
-		if dotIdx > 0 {
+		if dotIdx := strings.LastIndex(key, "."); dotIdx > 0 {
 			key = key[:dotIdx]
 		}
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		// 优先 jpg
-		if strings.HasSuffix(path, ".jpg") || !strings.HasSuffix(path, ".webp") {
-			filtered = append(filtered, path)
-		} else {
-			filtered = append(filtered, path)
-		}
-	}
-
-	baseURL := "https://" + cdnArr[0]
-	var urls []string
-	for _, path := range filtered {
 		if strings.HasPrefix(path, "http") {
 			urls = append(urls, path)
 		} else {
@@ -94,53 +140,74 @@ func extractKSAtlasImages(html string) []string {
 	return urls
 }
 
-// KuaiShou 解析 - 支持视频(mp4)和图文(图片列表)
-// 返回: 视频URL, 图片URL列表(IMAGE:前缀分隔), 错误
-func KuaiShou(rUrl, ua string) (string, error) {
-	body, err := getKSRealityUrl(rUrl, ua)
-	if err != nil {
-		return "", err
+// extractKSField 从快手HTML中提取字段
+func extractKSField(html, field string) string {
+	re := regexp.MustCompile(`"` + field + `"\s*:\s*"([^"]*)"`)
+	m := re.FindStringSubmatch(html)
+	if len(m) >= 2 {
+		val := m[1]
+		val = strings.ReplaceAll(val, `\u0026`, "&")
+		val = strings.ReplaceAll(val, `\u002F`, "/")
+		return strings.TrimSpace(val)
 	}
-	html := string(body)
+	return ""
+}
 
-	// 方式1: 匹配视频 mp4 URL
-	regs := regexp.MustCompile(`"url":"(https?://[^"]+\.mp4[^"]*)"`)
-	matches := regs.FindAllStringSubmatch(html, -1)
-	if len(matches) > 0 && len(matches[0]) >= 2 {
-		return matches[0][1], nil
-	}
+// extractKSTopics 提取快手话题标签
+func extractKSTopics(html string) []string {
+	var topics []string
+	seen := make(map[string]bool)
 
-	// 方式2: 兼容旧格式 srcNoMark
-	regs2 := regexp.MustCompile(`srcNoMark":"(.*?)"`)
-	matches2 := regs2.FindStringSubmatch(html)
-	if len(matches2) == 2 {
-		return matches2[1], nil
-	}
-
-	// 方式3: 图文帖子 - atlas list + cdn (新格式)
-	atlasImages := extractKSAtlasImages(html)
-	if len(atlasImages) > 0 {
-		return "IMAGE:" + strings.Join(atlasImages, ","), nil
-	}
-
-	// 方式4: 图文帖子 - imageUrls (旧格式，兜底)
-	regs3 := regexp.MustCompile(`"imageUrls":\[(.*?)\]`)
-	matches3 := regs3.FindStringSubmatch(html)
-	if len(matches3) == 2 {
-		urlRegs := regexp.MustCompile(`"url":"(https?://[^"]+)"`)
-		urlMatches := urlRegs.FindAllStringSubmatch(matches3[1], -1)
-		if len(urlMatches) > 0 {
-			var urls []string
-			for _, m := range urlMatches {
-				if len(m) >= 2 {
-					urls = append(urls, m[1])
+	// 快手话题格式: "atlasTitle":"#话题#" 或 "topic":"xxx"
+	re := regexp.MustCompile(`"topic"\s*:\s*"([^"]+)"`)
+	matches := re.FindAllStringSubmatch(html, -1)
+	for _, m := range matches {
+		if len(m) >= 2 {
+			t := strings.TrimSpace(m[1])
+			if t != "" && !seen[t] {
+				seen[t] = true
+				if !strings.HasPrefix(t, "#") {
+					t = "#" + t
 				}
-			}
-			if len(urls) > 0 {
-				return "IMAGE:" + strings.Join(urls, ","), nil
+				topics = append(topics, t)
 			}
 		}
 	}
 
-	return "", errors.New("无效地址：未找到视频或图片链接")
+	// 备用: tagName
+	if len(topics) == 0 {
+		re2 := regexp.MustCompile(`"tagName"\s*:\s*"([^"]+)"`)
+		matches2 := re2.FindAllStringSubmatch(html, -1)
+		for _, m := range matches2 {
+			if len(m) >= 2 {
+				t := strings.TrimSpace(m[1])
+				if t != "" && !seen[t] {
+					seen[t] = true
+					if !strings.HasPrefix(t, "#") {
+						t = "#" + t
+					}
+					topics = append(topics, t)
+				}
+			}
+		}
+	}
+
+	return topics
+}
+
+// extractKSCover 提取快手封面
+func extractKSCover(html string) string {
+	// 封面格式: "coverUrl":"xxx" 或 "photoUrl":"xxx" 或 "thumbnailUrl":"xxx"
+	fields := []string{"coverUrl", "photoUrl", "thumbnailUrl", "cover", "poster"}
+	for _, f := range fields {
+		re := regexp.MustCompile(`"` + f + `"\s*:\s*"(https?://[^"]+)"`)
+		m := re.FindStringSubmatch(html)
+		if len(m) >= 2 {
+			url := strings.ReplaceAll(m[1], `\u002F`, "/")
+			if url != "" {
+				return url
+			}
+		}
+	}
+	return ""
 }

@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"encoding/base64"
-	"fmt"
 	"net/http"
 	"strings"
 	"watermarkServer/handleVideo"
@@ -11,64 +10,50 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const (
-	phone_ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1"
-)
-
 type IndexController struct{}
 
 var base = &modules.BaseController{}
 
-func (ctr *IndexController) Index(ctx *gin.Context) {
-	var path string
-	var err error
-	type Platform struct {
-		Name     string `json:"name"`
-		Platform string `json:"platform"`
+// Parse 统一解析入口: GET/POST /parse?url=<链接或分享文字>
+func (ctr *IndexController) Parse(ctx *gin.Context) {
+	// 支持 GET ?url= 和 POST {"url": ""}
+	var rawInput string = ctx.Query("url")
+	if rawInput == "" {
+		rawInput = ctx.Query("key_words") // 兼容旧参数
 	}
-	var platformInfo = &Platform{}
-
-	// 支持 GET query 和 POST JSON body
-	var keyWords string = ctx.Query("key_words")
-	if keyWords == "" && ctx.Request.Method == "POST" {
+	if rawInput == "" && ctx.Request.Method == "POST" {
 		var body struct {
-			KeyWords string `json:"key_words"`
+			URL      string `json:"url"`
+			KeyWords string `json:"key_words"` // 兼容旧参数
 		}
 		if bindErr := ctx.ShouldBindJSON(&body); bindErr == nil {
-			keyWords = body.KeyWords
+			rawInput = body.URL
+			if rawInput == "" {
+				rawInput = body.KeyWords
+			}
 		}
 	}
-	if keyWords == "" {
-		ctx.JSON(http.StatusOK, gin.H{
-			"code": http.StatusBadRequest,
-			"msg":  "缺少关键词",
-			"data": nil,
-		})
+	if rawInput == "" {
+		base.Err(ctx, "缺少链接参数 url")
 		return
 	}
-	rUrl, err := modules.GetUrl(keyWords)
+
+	// 从分享文字中提取 URL
+	rUrl, err := modules.GetUrl(rawInput)
 	if err != nil {
-		base.Err(ctx, err.Error())
+		base.Err(ctx, "无效链接：未找到支持的平台URL")
 		return
 	}
 
-	if strings.Contains(rUrl, "douyin.com") { // 抖音（含抖音火山版）
-		platformInfo.Name = "抖音"
-		platformInfo.Platform = "douyin"
-		path, err = handleVideo.DouYin(rUrl, phone_ua)
-		fmt.Println("Index", path, err)
-	} else if strings.Contains(rUrl, "kuaishou.com") { // 快手
-		platformInfo.Name = "快手"
-		platformInfo.Platform = "kuaishou"
-		path, err = handleVideo.KuaiShou(rUrl, phone_ua)
-	} else if strings.Contains(rUrl, "b23.tv") || strings.Contains(rUrl, "bilibili.com") { // BiliBili
-		platformInfo.Name = "BiliBili"
-		platformInfo.Platform = "bilibili"
-		path, err = handleVideo.BiliBili(rUrl, phone_ua)
-
+	// 按平台分发
+	var info *handleVideo.VideoInfo
+	if strings.Contains(rUrl, "douyin.com") {
+		info, err = handleVideo.DouYin(rUrl)
+	} else if strings.Contains(rUrl, "kuaishou.com") {
+		info, err = handleVideo.KuaiShou(rUrl)
+	} else if strings.Contains(rUrl, "b23.tv") || strings.Contains(rUrl, "bilibili.com") {
+		info, err = handleVideo.BiliBili(rUrl)
 	} else {
-		platformInfo.Name = ""
-		platformInfo.Platform = ""
 		base.Err(ctx, "暂不支持该平台！当前支持：抖音、快手、BiliBili")
 		return
 	}
@@ -77,31 +62,21 @@ func (ctr *IndexController) Index(ctx *gin.Context) {
 		base.Err(ctx, err.Error())
 		return
 	}
-	var res = &struct {
-		PlatformInfo *Platform  `json:"platformInfo"`
-		Path         string     `json:"path"`
-		Images       []string   `json:"images,omitempty"`
-	}{
-		PlatformInfo: platformInfo,
-		Path:         path,
+
+	// B站视频有防盗链，转为代理链接
+	if info.Platform == "bilibili" && info.Video != "" {
+		info.Video = buildProxyURL(ctx, info.Video)
 	}
 
-	// B站代理
-	if platformInfo.Platform == "bilibili" && path != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(path))
-		scheme := "http"
-		if ctx.Request.TLS != nil {
-			scheme = "https"
-		}
-		res.Path = scheme + "://" + ctx.Request.Host + "/proxy/" + encoded
-	}
+	base.Success(ctx, info, "解析完成")
+}
 
-	// 快手图文 - 解析 IMAGE: 前缀
-	if strings.HasPrefix(path, "IMAGE:") {
-		res.Path = ""
-		urlStr := strings.TrimPrefix(path, "IMAGE:")
-		res.Images = strings.Split(urlStr, ",")
+// buildProxyURL 将直链转为本地代理链接
+func buildProxyURL(ctx *gin.Context, rawURL string) string {
+	encoded := base64.StdEncoding.EncodeToString([]byte(rawURL))
+	scheme := "http"
+	if ctx.Request.TLS != nil {
+		scheme = "https"
 	}
-
-	base.Success(ctx, res, "解析完成")
+	return scheme + "://" + ctx.Request.Host + "/proxy/" + encoded
 }
